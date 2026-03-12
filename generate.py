@@ -272,7 +272,7 @@ def cmd_check(test_dir):
 
     # parse mocks.py — find all *S = [...] and count items
     axes = _parse_mock_axes(mocks_file)
-    # parse test_flows.py — find all test functions and their parametrize decorators
+    # parse test_flows.py — find all test functions (including class-based)
     tests = _parse_test_functions(test_file)
 
     if not axes:
@@ -282,47 +282,51 @@ def cmd_check(test_dir):
         print("Warning: no test functions found in test_flows.py")
         return
 
-    # calculate coverage
-    total_combos = 1
-    for axis_name, count in axes.items():
-        total_combos *= count
-
+    # available axes
     print(f"check: {test_dir}/")
     print(f"  axes:")
     for axis_name, count in axes.items():
         print(f"    {axis_name}: {count} items")
-    print(f"  combinations per flow: {total_combos}")
     print()
 
-    mock_tests = [t for t in tests if t["name"].startswith("test_mock_")]
-    api_tests = [t for t in tests if t["name"].startswith("test_api_")]
+    # group tests by class (flow) or standalone
+    groups = {}
+    for t in tests:
+        group = t.get("class", "_standalone")
+        if group not in groups:
+            groups[group] = []
+        groups[group].append(t)
 
-    print(f"  mock tests: {len(mock_tests)} functions")
-    for t in mock_tests:
-        flow = t["name"].removeprefix("test_mock_")
-        covered = _calc_coverage(t["parametrize"], axes)
-        status = "OK" if covered == total_combos else f"GAP ({covered}/{total_combos})"
-        missing_axes = [a for a in axes if a not in t["parametrize"]]
-        if missing_axes:
-            status = f"MISSING AXES: {', '.join(missing_axes)}"
-        print(f"    {flow}: {status}")
+    total_cases = 0
+    total_parametrized = 0
 
-    if api_tests:
-        print(f"  api tests:  {len(api_tests)} functions")
-        for t in api_tests:
-            flow = t["name"].removeprefix("test_api_")
-            covered = _calc_coverage(t["parametrize"], axes)
-            status = "OK" if covered == total_combos else f"GAP ({covered}/{total_combos})"
-            missing_axes = [a for a in axes if a not in t["parametrize"]]
-            if missing_axes:
-                status = f"MISSING AXES: {', '.join(missing_axes)}"
-            print(f"    {flow}: {status}")
+    print(f"  flows:")
+    for group_name, group_tests in groups.items():
+        label = group_name if group_name != "_standalone" else "standalone"
+        group_cases = 0
+        group_axes_used = set()
 
-    total_test_slots = (len(mock_tests) + len(api_tests)) * total_combos
-    actual_slots = sum(_calc_coverage(t["parametrize"], axes) for t in tests)
-    pct = (actual_slots / total_test_slots * 100) if total_test_slots else 0
+        for t in group_tests:
+            # count cases: product of parametrize axes, minimum 1
+            cases = 1
+            for param_name, var_name in t["parametrize"].items():
+                # match by param name or by mock variable name (e.g., FILE_STATES → file_state)
+                matched_axis = _match_axis(param_name, var_name, axes)
+                if matched_axis:
+                    cases *= axes[matched_axis]
+                    group_axes_used.add(matched_axis)
+            group_cases += cases
+
+        axes_str = ", ".join(sorted(group_axes_used)) if group_axes_used else "none"
+        print(f"    {label}: {len(group_tests)} tests, {group_cases} cases (axes: {axes_str})")
+        total_cases += group_cases
+        total_parametrized += sum(1 for t in group_tests if t["parametrize"])
+
     print()
-    print(f"  coverage: {actual_slots}/{total_test_slots} ({pct:.0f}%)")
+    print(f"  summary:")
+    print(f"    total tests: {len(tests)}")
+    print(f"    total cases: {total_cases}")
+    print(f"    parametrized: {total_parametrized}/{len(tests)}")
 
 
 def _parse_mock_axes(filepath):
@@ -338,20 +342,8 @@ def _parse_mock_axes(filepath):
         # skip _IDS variables
         if var_name.endswith("_IDS"):
             continue
-        # count items by finding dicts in the list
-        start = match.end()
-        bracket_depth = 1
-        items = 0
-        i = start
-        while i < len(content) and bracket_depth > 0:
-            ch = content[i]
-            if ch == "[":
-                bracket_depth += 1
-            elif ch == "]":
-                bracket_depth -= 1
-            elif ch == "{" and bracket_depth == 1:
-                items += 1
-            i += 1
+        # count top-level dict items in the list using AST for accuracy
+        items = _count_list_items_ast(content, var_name)
 
         # convert VAR_NAMES → var_name (strip trailing S, lowercase)
         axis_name = var_name[:-1].lower()  # MEMBER_TYPES → member_type
@@ -361,7 +353,8 @@ def _parse_mock_axes(filepath):
 
 
 def _parse_test_functions(filepath):
-    """Parse test_flows.py to find test functions and their parametrize decorators."""
+    """Parse test_flows.py to find test functions and their parametrize decorators.
+    Supports both standalone functions and class-based test methods."""
     tests = []
     with open(filepath) as f:
         content = f.read()
@@ -372,38 +365,68 @@ def _parse_test_functions(filepath):
         print(f"Warning: could not parse {filepath}", file=sys.stderr)
         return tests
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        if not node.name.startswith("test_"):
-            continue
-
+    def _extract_parametrize(decorators):
         parametrize = {}
-        for dec in node.decorator_list:
+        for dec in decorators:
             if not isinstance(dec, ast.Call):
                 continue
             func = dec.func
-            # match pytest.mark.parametrize
             if isinstance(func, ast.Attribute) and func.attr == "parametrize":
                 if dec.args and isinstance(dec.args[0], ast.Constant):
                     param_name = dec.args[0].value
-                    # try to get the variable name to count items
                     if len(dec.args) > 1 and isinstance(dec.args[1], ast.Name):
                         parametrize[param_name] = dec.args[1].id
+        return parametrize
 
-        tests.append({"name": node.name, "parametrize": parametrize})
+    for node in ast.iter_child_nodes(tree):
+        # standalone test functions
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            tests.append({
+                "name": node.name,
+                "parametrize": _extract_parametrize(node.decorator_list),
+            })
+        # class-based test methods
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            for method in node.body:
+                if isinstance(method, ast.FunctionDef) and method.name.startswith("test_"):
+                    tests.append({
+                        "name": f"{node.name}::{method.name}",
+                        "class": node.name,
+                        "parametrize": _extract_parametrize(method.decorator_list),
+                    })
 
     return tests
 
 
-def _calc_coverage(parametrize_map, axes):
-    """Calculate how many combinations a test covers based on its parametrize decorators."""
-    covered = 1
-    for axis_name, count in axes.items():
-        if axis_name in parametrize_map:
-            covered *= count
-        # if axis not parametrized, it covers 1 (fixed value)
-    return covered
+def _count_list_items_ast(content, var_name):
+    """Use AST to count top-level items in a list variable assignment."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id == var_name:
+                if isinstance(node.value, ast.List):
+                    return len(node.value.elts)
+    return 0
+
+
+def _match_axis(param_name, var_name, axes):
+    """Match a parametrize param/var to an axis name.
+    Tries: exact param match, var_name → axis (e.g., FILE_STATES → file_state, DEFAULT_PATHS → default_path)."""
+    if param_name in axes:
+        return param_name
+    # derive axis name from variable: FILE_STATES → file_state, DEFAULT_PATHS → default_path
+    if var_name:
+        derived = var_name.lower()
+        if derived.endswith("s"):
+            derived = derived[:-1]  # FILE_STATES → file_state
+        if derived in axes:
+            return derived
+    return None
+
 
 
 # ══════════════════════════════════════════
