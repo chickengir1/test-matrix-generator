@@ -1,37 +1,37 @@
 # test-matrix-generator
 
-Scenario-based pytest test matrix scaffolder + coverage checker for Claude Code.
+시나리오 기반 pytest 테스트 매트릭스 scaffolder + 커버리지 검증 도구.
 
-Generates Given/When/Then test structures with variation axes. API call/payload validation is delegated to Postman MCP — this tool focuses on **logic verification**.
+Given/When/Then 구조의 테스트를 생성하고, variation axes로 조합을 만듭니다. API 호출/페이로드 검증은 Postman MCP에 위임하며, 이 도구는 **로직 검증**에 집중합니다.
 
-## Install
+## 설치
 
 ```bash
-# Tool
+# 도구
 mkdir -p ~/.claude/tools/test-matrix
 cp generate.py ~/.claude/tools/test-matrix/
 
-# Skill
+# 스킬
 mkdir -p ~/.claude/skills/test-matrix
 cp skill.md ~/.claude/skills/test-matrix/
 
-# (Optional) Auto-allow in ~/.claude/settings.json permissions.allow:
+# (선택) ~/.claude/settings.json의 permissions.allow에 추가:
 # "Bash(*python3 ~/.claude/tools/test-matrix/generate.py*)"
 ```
 
-## Usage
+## 사용법
 
-### Claude Code Skill
+### Claude Code 스킬
 
 ```
 /test-matrix
 ```
 
-Claude traces the UI flow (component → service → API), defines scenarios, ports logic, and runs tests.
+Claude가 UI 흐름(component → service → API)을 추적하고, 시나리오 정의 → 로직 포팅 → 테스트 실행까지 처리합니다.
 
-### CLI
+### CLI 직접 사용
 
-#### init — scaffold generation
+#### init — scaffold 생성
 
 ```bash
 cat <<'EOF' | python3 generate.py init -
@@ -69,7 +69,7 @@ cat <<'EOF' | python3 generate.py init -
 EOF
 ```
 
-Output:
+출력:
 ```
 init: tests/bulk_update/
   bulk_update: role(3) x item_count(3) = 9 cases
@@ -77,13 +77,13 @@ init: tests/bulk_update/
   files: __init__.py, mocks.py, logic.py, test_scenarios.py
 ```
 
-#### check — coverage validation
+#### check — 커버리지 검증
 
 ```bash
 python3 generate.py check tests/bulk_update/
 ```
 
-Output:
+출력:
 ```
 check: tests/bulk_update/
   unfilled:
@@ -103,37 +103,37 @@ check: tests/bulk_update/
     parametrized: 1/1
 ```
 
-## Generated File Structure
+## 생성 파일 구조
 
 ```
 {output_dir}/
-  __init__.py          # Python package
-  mocks.py             # Given-state mock data per scenario
-  logic.py             # When-step logic stubs (port source code here)
-  test_scenarios.py    # @pytest.mark.parametrize scenario tests
+  __init__.py          # Python 패키지
+  mocks.py             # 시나리오별 Given 상태 mock 데이터
+  logic.py             # When 단계 로직 (소스 코드를 여기에 포팅)
+  test_scenarios.py    # @pytest.mark.parametrize 시나리오 테스트
 ```
 
-## Config Spec
+## Config 스펙
 
 ```json
 {
-  "name": "string — test suite name",
-  "output_dir": "string — output path (hyphens auto-converted to underscores)",
+  "name": "string — 테스트 이름",
+  "output_dir": "string — 출력 경로 (하이픈은 자동으로 언더스코어 변환)",
   "scenarios": [
     {
-      "id": "string — scenario identifier",
-      "desc": "string — human-readable description",
-      "given": "string — preconditions",
-      "when": "string — action",
-      "then": "string — expected outcome",
+      "id": "string — 시나리오 식별자",
+      "desc": "string — 설명",
+      "given": "string — 전제 조건",
+      "when": "string — 실행할 동작",
+      "then": "string — 기대 결과",
       "axes": [
         {
-          "name": "string — variation axis name",
+          "name": "string — 변형 축 이름",
           "items": [
             {
-              "id": "string — unique identifier",
-              "desc": "string — description",
-              "expect_fail": "boolean (optional) — if true, tested with pytest.raises"
+              "id": "string — 고유 식별자",
+              "desc": "string — 설명",
+              "expect_fail": "boolean (선택) — true이면 pytest.raises로 검증"
             }
           ]
         }
@@ -143,20 +143,20 @@ check: tests/bulk_update/
 }
 ```
 
-- `scenarios` is required. Each must have at least one axis.
-- `expect_fail` items validate error paths via `pytest.raises`.
-- Axes are combined via cartesian product.
+- `scenarios` 필수. 각 시나리오에 최소 하나의 axis 필요.
+- `expect_fail` 항목은 `pytest.raises`로 에러 경로를 검증.
+- axes는 cartesian product로 조합.
 
-## Workflow
+## 워크플로우
 
-1. **Scenario definition** — Trace UI flow (component → service → API), define Given/When/Then
-2. **Logic porting** — Port the When-step source code logic into Python
-3. **API inspection** — Use Postman MCP to inspect response/payload structures
-4. **Mock data** — Fill Given-state data based on real API responses
-5. **Scaffold** — `generate.py init` creates the test structure
-6. **Run** — `pytest test_scenarios.py -v`
-7. **Check** — `generate.py check` validates coverage and unfilled TODOs
+1. **시나리오 정의** — UI 흐름(component → service → API) 추적, Given/When/Then 정의
+2. **로직 포팅** — When 단계의 소스 코드 로직을 Python으로 재현
+3. **API 응답 확인** — Postman MCP로 응답/페이로드 구조 확인
+4. **mock 데이터** — 실제 API 응답 기반으로 Given 상태 데이터 작성
+5. **scaffold** — `generate.py init`으로 테스트 구조 생성
+6. **실행** — `pytest test_scenarios.py -v`
+7. **검증** — `generate.py check`로 커버리지 및 미완성 TODO 확인
 
-## License
+## 라이선스
 
 MIT
