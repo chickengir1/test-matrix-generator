@@ -1,6 +1,6 @@
 # Test Matrix Generator
 
-pytest 기반 테스트 매트릭스를 생성한다.
+Generate scenario-based pytest test matrices. Focuses on logic verification; API call/payload validation is handled by Postman MCP.
 
 ## Trigger
 
@@ -8,77 +8,103 @@ pytest 기반 테스트 매트릭스를 생성한다.
 
 ## Instructions
 
-### Step 1: 도메인 파악
+### Step 1: Scenario Definition
 
-유저에게 질문한다:
-- "어떤 기능을 테스트하려고? 관련 소스 파일은?"
+Ask the user:
+- "What feature do you want to test? Any related source files?"
 
-답변 기반으로 코드베이스를 조사한다:
-- **범위가 좁을 때**: Explore agent로 빠르게 조사
-- **범위가 넓을 때**: Agent Team을 구성하여 병렬 조사 (예: UI 컴포넌트 팀 + API 서비스 팀)
-- 도메인 모델 파악 (타입, 인터페이스, enum, 분기 조건)
-- 엣지 케이스 식별
+Then **autonomously** trace the UI flow in the codebase:
+- Start from the component (UI entry point)
+- Follow the code path: component → service → API call
+- Identify branching conditions, state transformations, and error handling at each step
+- Use Explore agent for narrow scope, Agent Teams for wide scope
 
-### Step 2: 매트릭스 설계
+Based on the traced flow, **define scenarios** in Given/When/Then format:
+- Each scenario maps to a real user journey (e.g., "user opens list → edits cell → saves")
+- Given = preconditions (role, data state)
+- When = the action chain through the UI flow
+- Then = expected outcome
+- Mark expected-failure variations (e.g., unauthorized role, empty input)
 
-조사 결과를 바탕으로 매트릭스를 테이블로 제안한다:
-- **Flows**: 테스트할 동작 목록
-- **Axes**: 데이터 변형 축 (이름 + 항목 목록)
-- cartesian product로 전체 조합 수 계산
+Present the scenarios to the user for confirmation.
 
-유저 확인을 받는다. 축 추가/제거/수정 반영.
+### Step 2: Logic Porting
 
-### Step 3: scaffold 생성
+Port the When-step logic from the source code into Python:
+- Reproduce the component/service logic that runs between user action and API call
+- Include data transformations, validations, and branching
+- This is the core of what the test matrix verifies
 
-config JSON을 구성하고 scaffolder를 호출한다:
+### Step 3: API Response Structure (Postman MCP)
+
+Ask the user which Postman workspace/collection has the relevant endpoints, then:
+- Look up related requests/responses from Postman collections
+- For GET endpoints: inspect response shape (fields, types, nullability, arrays)
+- For POST/PATCH endpoints: inspect request payload structure and response
+- Use this data as the basis for realistic mock data
+
+Skip this step for pure logic tests.
+
+### Step 4: Mock Data
+
+Fill mocks.py with Given-state data:
+- Base field values on Postman response shapes from Step 3
+- Each axis item should represent a realistic variation
+- Items with `expect_fail: true` represent error paths
+
+### Step 5: Scaffold Generation
+
+Compose config JSON and invoke the scaffolder:
 
 ```bash
 cat <<'EOF' | python3 ~/.claude/tools/test-matrix/generate.py init -
 {
-  "name": "프로젝트명",
-  "output_dir": "{레포지토리 루트}/.claude/tests/{주제명}",
-  "flows": ["flow1", "flow2"],
-  "axes": [
-    {"name": "axis_name", "items": [{"id": "...", "desc": "..."}]}
-  ],
-  "api": {"base_url_env": "...", "token_env": "..."}
+  "name": "project_name",
+  "output_dir": "{repo_root}/.claude/tests/{topic}",
+  "scenarios": [
+    {
+      "id": "scenario_id",
+      "desc": "user does X",
+      "given": "preconditions",
+      "when": "action chain",
+      "then": "expected outcome",
+      "axes": [
+        {
+          "name": "axis_name",
+          "items": [
+            {"id": "normal", "desc": "normal case"},
+            {"id": "error", "desc": "error case", "expect_fail": true}
+          ]
+        }
+      ]
+    }
+  ]
 }
 EOF
 ```
 
-- `output_dir`은 현재 레포지토리의 `.claude/tests/e2e/` (없으면 자동 생성)
-- `api`는 E2E 테스트가 필요할 때만 포함
+Then fill the generated skeleton with logic from Step 2 and mocks from Step 4.
 
-### Step 4: 내용 채우기
-
-생성된 skeleton 파일에 Step 1에서 파악한 도메인 지식으로 실제 내용을 작성한다:
-
-1. **mocks.py** — 각 item에 도메인 기반 mock 데이터 필드 추가
-2. **logic.py** — 프론트엔드/백엔드 소스 코드 로직을 Python으로 재현
-3. **test_flows.py** — flow별 assertion 로직 작성
-4. **conftest.py** — API fixtures 구현 (E2E 테스트 시)
-5. **common.py** — base URL, 인증 등 환경 맞춤 수정
-
-### Step 5: 실행 + 검증
+### Step 6: Run + Verify
 
 ```bash
-cd {레포지토리 루트}/.claude && python3 -m pytest tests/e2e/test_flows.py -v
+cd {repo_root}/.claude && python3 -m pytest tests/{topic}/test_scenarios.py -v
 ```
 
-실행 후 커버리지 검증:
+Check coverage:
 
 ```bash
-python3 ~/.claude/tools/test-matrix/generate.py check {레포지토리 루트}/.claude/tests/{주제명}/
+python3 ~/.claude/tools/test-matrix/generate.py check {repo_root}/.claude/tests/{topic}/
 ```
 
-결과를 유저에게 보고한다:
-- passed / failed / skipped 수
-- 매트릭스 커버리지 (빠진 조합 경고)
-- 실패 원인과 수정 제안
+Reports: pass/fail/skip counts, unfilled TODOs, coverage per scenario.
 
 ## Rules
 
-- 도메인 로직을 충분히 파악하기 전에 코드를 생성하지 않는다
-- 매트릭스는 반드시 유저 확인 후 생성한다
-- mock 데이터는 실제 프로덕션 데이터 구조를 반영한다
-- scaffold 후 반드시 내용을 채운다 (TODO 상태로 두지 않는다)
+- Scenario definition is the most important step. Trace the full UI flow before defining scenarios
+- Do not generate code before understanding the component → service → API code path
+- Scenarios must be confirmed by the user before generation
+- Mock data must reflect real production data structures, grounded in Postman response shapes
+- Always fill content after scaffolding (never leave TODOs)
+- API call/payload validation is delegated to Postman MCP. Test matrix focuses solely on logic verification
+- Items with `expect_fail: true` are tested with `pytest.raises`

@@ -1,154 +1,162 @@
 # test-matrix-generator
 
-pytest 기반 테스트 매트릭스 scaffolder + 커버리지 검증 도구.
+Scenario-based pytest test matrix scaffolder + coverage checker for Claude Code.
 
-Claude Code 스킬(`/test-matrix`)과 함께 사용하면 도메인 조사 → 매트릭스 설계 → scaffold 생성 → 내용 채우기 → 실행 → 검증까지 자동화됩니다.
+Generates Given/When/Then test structures with variation axes. API call/payload validation is delegated to Postman MCP — this tool focuses on **logic verification**.
 
-## 설치
+## Install
 
 ```bash
-# 도구 설치
+# Tool
 mkdir -p ~/.claude/tools/test-matrix
 cp generate.py ~/.claude/tools/test-matrix/
 
-# 스킬 설치
+# Skill
 mkdir -p ~/.claude/skills/test-matrix
 cp skill.md ~/.claude/skills/test-matrix/
 
-# (선택) Bash 권한 자동 허용 — ~/.claude/settings.json의 permissions.allow에 추가
+# (Optional) Auto-allow in ~/.claude/settings.json permissions.allow:
 # "Bash(*python3 ~/.claude/tools/test-matrix/generate.py*)"
 ```
 
-## 사용법
+## Usage
 
-### 1. Claude Code 스킬
+### Claude Code Skill
 
 ```
 /test-matrix
 ```
 
-Claude가 도메인 조사 → 매트릭스 제안 → scaffold 생성 → mock/logic 채우기 → pytest 실행까지 처리합니다.
+Claude traces the UI flow (component → service → API), defines scenarios, ports logic, and runs tests.
 
-### 2. CLI 직접 사용
+### CLI
 
-#### init — scaffold 생성
+#### init — scaffold generation
 
 ```bash
 cat <<'EOF' | python3 generate.py init -
 {
-  "name": "my-feature",
-  "output_dir": "tests/my_feature",
-  "flows": ["create", "update", "delete"],
-  "axes": [
+  "name": "bulk-update",
+  "output_dir": "tests/bulk_update",
+  "scenarios": [
     {
-      "name": "user_role",
-      "items": [
-        {"id": "admin", "desc": "관리자"},
-        {"id": "member", "desc": "일반회원"},
-        {"id": "guest", "desc": "비회원"}
-      ]
-    },
-    {
-      "name": "data_state",
-      "items": [
-        {"id": "valid", "desc": "정상 데이터"},
-        {"id": "empty", "desc": "빈 데이터"},
-        {"id": "invalid", "desc": "잘못된 데이터"}
+      "id": "bulk_update",
+      "desc": "user bulk-updates a list",
+      "given": "editor role, 3 items exist",
+      "when": "update name field",
+      "then": "3 changed, 0 failed",
+      "axes": [
+        {
+          "name": "role",
+          "items": [
+            {"id": "editor", "desc": "editor role"},
+            {"id": "viewer", "desc": "viewer role", "expect_fail": true},
+            {"id": "admin", "desc": "admin role"}
+          ]
+        },
+        {
+          "name": "item_count",
+          "items": [
+            {"id": "empty", "desc": "0 items"},
+            {"id": "single", "desc": "1 item"},
+            {"id": "bulk", "desc": "100 items"}
+          ]
+        }
       ]
     }
-  ],
-  "api": {
-    "base_url_env": "API_BASE_URL",
-    "token_env": "API_TOKEN"
-  }
+  ]
 }
 EOF
 ```
 
-출력:
+Output:
 ```
-init: tests/my_feature/
-  flows: create, update, delete
-  axes:  user_role(3) x data_state(3)
-  mock tests:  27
-  api tests:   27
-  total slots: 54
-  files: __init__.py, mocks.py, logic.py, conftest.py, test_flows.py, common.py
+init: tests/bulk_update/
+  bulk_update: role(3) x item_count(3) = 9 cases
+  total: 9 cases
+  files: __init__.py, mocks.py, logic.py, test_scenarios.py
 ```
 
-#### check — 커버리지 검증
+#### check — coverage validation
 
 ```bash
-python3 generate.py check tests/my_feature/
+python3 generate.py check tests/bulk_update/
 ```
 
-출력:
+Output:
 ```
-check: tests/my_feature/
+check: tests/bulk_update/
+  unfilled:
+    ! mocks.py: 6 TODO(s)
+    ! logic.py: has NotImplementedError
+
   axes:
-    user_role: 3 items
-    data_state: 3 items
-  combinations per flow: 9
+    role: 3 items
+    item_count: 3 items
 
-  mock tests: 3 functions
-    create: OK
-    update: OK
-    delete: OK
+  scenarios:
+    standalone: 1 tests, 9 cases (axes: item_count, role)
 
-  coverage: 54/54 (100%)
+  summary:
+    total tests: 1
+    total cases: 9
+    parametrized: 1/1
 ```
 
-빠진 `@pytest.mark.parametrize` 축이 있으면 경고:
-```
-    create: MISSING AXES: data_state
-  coverage: 27/54 (50%)
-```
-
-## 생성 파일 구조
+## Generated File Structure
 
 ```
 {output_dir}/
-  __init__.py       # Python 패키지
-  mocks.py          # axis별 mock 데이터 skeleton
-  logic.py          # flow별 비즈니스 로직 stub
-  conftest.py       # pytest fixtures
-  test_flows.py     # @pytest.mark.parametrize로 매트릭스 테스트
-  common.py         # HTTP helpers (api 설정 시에만)
+  __init__.py          # Python package
+  mocks.py             # Given-state mock data per scenario
+  logic.py             # When-step logic stubs (port source code here)
+  test_scenarios.py    # @pytest.mark.parametrize scenario tests
 ```
 
-## Config 스펙
+## Config Spec
 
 ```json
 {
-  "name": "string (필수) — 테스트 이름",
-  "output_dir": "string (필수) — 출력 경로 (하이픈은 자동으로 언더스코어 변환)",
-  "flows": ["string[] (필수) — 테스트할 동작 목록"],
-  "axes": [
+  "name": "string — test suite name",
+  "output_dir": "string — output path (hyphens auto-converted to underscores)",
+  "scenarios": [
     {
-      "name": "string — 축 이름",
-      "items": [
-        {"id": "string — 고유 식별자", "desc": "string — 설명"}
+      "id": "string — scenario identifier",
+      "desc": "string — human-readable description",
+      "given": "string — preconditions",
+      "when": "string — action",
+      "then": "string — expected outcome",
+      "axes": [
+        {
+          "name": "string — variation axis name",
+          "items": [
+            {
+              "id": "string — unique identifier",
+              "desc": "string — description",
+              "expect_fail": "boolean (optional) — if true, tested with pytest.raises"
+            }
+          ]
+        }
       ]
     }
-  ],
-  "api": {
-    "base_url_env": "string — 환경변수명 (기본: API_BASE_URL)",
-    "token_env": "string — 환경변수명 (기본: API_TOKEN)"
-  }
+  ]
 }
 ```
 
-- `api`는 선택. 없으면 mock 테스트만 생성.
-- `axes`는 N개 가능. cartesian product로 조합.
-- `output_dir`의 마지막 경로에 하이픈(`-`)이 있으면 자동으로 언더스코어(`_`)로 변환 (Python 패키지 호환).
+- `scenarios` is required. Each must have at least one axis.
+- `expect_fail` items validate error paths via `pytest.raises`.
+- Axes are combined via cartesian product.
 
-## 설계 철학
+## Workflow
 
-- **generate.py는 구조만** — 일관된 파일 구조, 네이밍, parametrize 패턴 보장
-- **내용은 도메인 전문가(또는 Claude)가 채움** — mock 데이터, 로직, assertion
-- **init은 1회** — 생성 후 자유롭게 편집. 재실행 불필요
-- **check는 수시로** — parametrize 누락, 커버리지 갭 자동 검출
+1. **Scenario definition** — Trace UI flow (component → service → API), define Given/When/Then
+2. **Logic porting** — Port the When-step source code logic into Python
+3. **API inspection** — Use Postman MCP to inspect response/payload structures
+4. **Mock data** — Fill Given-state data based on real API responses
+5. **Scaffold** — `generate.py init` creates the test structure
+6. **Run** — `pytest test_scenarios.py -v`
+7. **Check** — `generate.py check` validates coverage and unfilled TODOs
 
-## 라이선스
+## License
 
 MIT
